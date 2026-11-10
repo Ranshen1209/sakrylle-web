@@ -1,8 +1,14 @@
-import { WEBUI_API_BASE_URL } from '$lib/config/app';
+import type { AgentModel } from '$lib/stores';
+import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 export type AutomationTerminalConfig = {
 	server_id: string;
 	cwd?: string;
+};
+
+export type AutomationTarget = {
+	type: 'chat' | 'channel';
+	channel_id?: string | null;
 };
 
 export type AutomationData = {
@@ -10,10 +16,12 @@ export type AutomationData = {
 	model_id: string;
 	rrule: string;
 	terminal?: AutomationTerminalConfig;
+	target?: AutomationTarget | null;
 };
 
 export type AutomationForm = {
 	name: string;
+	folder_id?: string | null;
 	data: AutomationData;
 	meta?: {
 		system_prompt?: string;
@@ -36,6 +44,7 @@ export type AutomationRunModel = {
 export type AutomationResponse = {
 	id: string;
 	user_id: string;
+	folder_id: string | null;
 	name: string;
 	data: AutomationData;
 	meta: Record<string, any> | null;
@@ -49,11 +58,28 @@ export type AutomationResponse = {
 	next_runs: number[] | null;
 };
 
+export const getAutomationModels = async (
+	token: string,
+	terminalId: string,
+	cwd: string,
+	automationId?: string
+): Promise<AgentModel[]> => {
+	const query = new URLSearchParams({ terminal_id: terminalId });
+	if (cwd) query.set('cwd', cwd);
+	if (automationId) query.set('automation_id', automationId);
+	const response = await fetch(`${WEBUI_API_BASE_URL}/automations/models?${query}`, {
+		headers: { authorization: `Bearer ${token}` }
+	});
+	if (!response.ok) throw await response.json();
+	return response.json();
+};
+
 export const getAutomationItems = async (
 	token: string,
 	query: string | null,
 	status: string | null,
-	page: number
+	page: number,
+	folder_id?: string | null
 ): Promise<{ items: AutomationResponse[]; total: number }> => {
 	let error = null;
 
@@ -66,6 +92,9 @@ export const getAutomationItems = async (
 	}
 	if (page) {
 		searchParams.append('page', page.toString());
+	}
+	if (folder_id !== undefined && folder_id !== null) {
+		searchParams.append('folder_id', folder_id);
 	}
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/automations/list?${searchParams.toString()}`, {

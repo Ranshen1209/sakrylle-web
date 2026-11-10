@@ -1,14 +1,19 @@
 <script lang="ts">
+	// Keep keys in nested template expressions visible to i18next-parser.
+	// $i18n.t("licensed under");
+
 	import { getVersionUpdates } from '$lib/apis';
 	import { getOllamaVersion } from '$lib/apis/ollama';
-	import { WEBUI_BUILD_HASH, WEBUI_VERSION } from '$lib/config/app';
-	import { WEBUI_NAME, config } from '$lib/stores';
+	import { WEBUI_BUILD_CHANNEL, WEBUI_VERSION } from '$lib/constants';
+	import { WEBUI_NAME, config, settings } from '$lib/stores';
 	import { compareVersion } from '$lib/utils';
 	import { onMount, getContext } from 'svelte';
 
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import BuildVersion from '$lib/components/common/BuildVersion.svelte';
+	import UserSettingRow from './UserSettingRow.svelte';
+	import UserSettingSection from './UserSettingSection.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	let ollamaVersion = '';
 
@@ -17,13 +22,15 @@
 		current: '',
 		latest: ''
 	};
+	const actionButtonClass =
+		'text-xs text-gray-500 transition-colors hover:text-gray-900 dark:text-gray-500 dark:hover:text-white';
 
 	const checkForVersionUpdates = async () => {
 		updateAvailable = null;
 		version = await getVersionUpdates(localStorage.token).catch((error) => {
 			return {
 				current: WEBUI_VERSION,
-				latest: WEBUI_VERSION
+				latest: null
 			};
 		});
 
@@ -38,67 +45,77 @@
 			return '';
 		});
 
-		if ($config?.features?.enable_version_update_check) {
+		if (WEBUI_BUILD_CHANNEL === 'main' && $config?.features?.enable_version_update_check) {
 			checkForVersionUpdates();
 		}
 	});
 </script>
 
-<div id="tab-about" class="flex flex-col h-full justify-between space-y-3 text-sm mb-6">
-	<div class=" space-y-3 overflow-y-scroll max-h-[28rem] md:max-h-full">
-		<div>
-			<div class=" mb-2.5 text-sm font-medium flex space-x-2 items-center">
-				<div>
-					{$WEBUI_NAME}
-					{$i18n.t('Version')}
-				</div>
-			</div>
-			<div class="flex w-full justify-between items-center">
-				<div class="flex flex-col text-xs text-gray-700 dark:text-gray-200">
-					<div class="flex gap-1">
-						<Tooltip content={WEBUI_BUILD_HASH}>
-							v{WEBUI_VERSION}
-						</Tooltip>
+<div id="tab-about" class="flex flex-col h-full justify-between text-sm">
+	<h2 class="text-sm font-medium text-gray-900 dark:text-white mb-4">
+		{$i18n.t('settings.personal.about.title')}
+	</h2>
 
-						{#if $config?.features?.enable_version_update_check}
-							<a
-								href="https://github.com/open-webui/open-webui/releases/tag/v{version.latest}"
-								target="_blank"
-							>
-								{updateAvailable === null
-									? $i18n.t('Checking for updates...')
-									: updateAvailable
-										? `(v${version.latest} ${$i18n.t('available!')})`
-										: $i18n.t('(latest)')}
-							</a>
+	<div class="flex-1 min-h-0 overflow-y-auto scrollbar-hover pr-1.5">
+		<!-- LICENSE covers this Open WebUI About identifier.
+		Do not alter, remove, obscure, or replace it except as LICENSE permits:
+		https://docs.openwebui.com/license. -->
+		<UserSettingSection
+			title={`${$WEBUI_NAME} ${$i18n.t('settings.personal.about.sections.version.title')}`}
+			first
+		>
+			<UserSettingRow description={$i18n.t('settings.personal.about.seeWhatSNew.description')}>
+				<div slot="label" class="flex flex-col text-xs text-gray-600 dark:text-gray-400">
+					<div
+						class="flex flex-wrap {($settings?.highContrastMode ?? false)
+							? 'items-center'
+							: ''} gap-1"
+					>
+						<BuildVersion />
+
+						{#if WEBUI_BUILD_CHANNEL === 'main' && $config?.features?.enable_version_update_check}
+							{#if version.latest === null}
+								<span>{$i18n.t('Could not check for updates')}</span>
+							{:else}
+								<a
+									class={($settings?.highContrastMode ?? false)
+										? 'inline-flex min-h-6 items-center'
+										: ''}
+									href="https://github.com/open-webui/open-webui/releases/tag/v{version.latest}"
+									target="_blank"
+								>
+									{updateAvailable === null
+										? $i18n.t('Checking for updates...')
+										: updateAvailable
+											? `(v${version.latest} ${$i18n.t('available!')})`
+											: $i18n.t('(latest)')}
+								</a>
+							{/if}
 						{/if}
 					</div>
+
 				</div>
 
-				{#if $config?.features?.enable_version_update_check}
+				{#if WEBUI_BUILD_CHANNEL === 'main' && $config?.features?.enable_version_update_check}
 					<button
-						class=" text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-lg font-medium"
+						class={actionButtonClass}
 						on:click={() => {
 							checkForVersionUpdates();
 						}}
 					>
-						{$i18n.t('Check for updates')}
+						{$i18n.t('settings.personal.about.checkForUpdates.label')}
 					</button>
 				{/if}
-			</div>
-		</div>
+			</UserSettingRow>
+		</UserSettingSection>
 
 		{#if ollamaVersion}
-			<hr class=" border-gray-100/30 dark:border-gray-850/30" />
-
-			<div>
-				<div class=" mb-2.5 text-sm font-medium">{$i18n.t('Ollama Version')}</div>
-				<div class="flex w-full">
-					<div class="flex-1 text-xs text-gray-700 dark:text-gray-200">
-						{ollamaVersion ?? 'N/A'}
-					</div>
+			<UserSettingSection title={$i18n.t('settings.personal.about.sections.ollamaVersion.title')}>
+				<div class="text-xs text-gray-600 dark:text-gray-400">
+					{ollamaVersion ?? 'N/A'}
 				</div>
-			</div>
+			</UserSettingSection>
 		{/if}
+
 	</div>
 </div>

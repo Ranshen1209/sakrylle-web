@@ -1,4 +1,5 @@
 export type Banner = {
+	i18n?: Record<string, { content: string }>;
 	id: string;
 	type: string;
 	title?: string;
@@ -14,17 +15,8 @@ export enum TTS_RESPONSE_SPLIT {
 	NONE = 'none'
 }
 
-export type {
-	Config,
-	DesktopEvent,
-	DesktopEventFile,
-	KnowledgeDocument,
-	Model,
-	ModelConfig,
-	ModelMeta,
-	ModelParams,
-	OllamaModel,
-	OpenAIModel,
-	SessionUser,
-	Settings
-} from './models';
+export type TerminalContext = {
+	terminalId: string | null;
+	currentDirectory: string;
+	file?: import('$lib/apis/terminal').FilesystemFile | null;
+};

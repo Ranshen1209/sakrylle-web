@@ -1,10 +1,16 @@
 <script lang="ts">
+	import { applyTetherToken } from '$lib/utils/tether';
+
 	import DOMPurify from 'dompurify';
+	import MfaChallengeForm from '$lib/components/auth/MfaChallenge.svelte';
+	import { mfaRequest, type MfaChallenge } from '$lib/apis/auths/mfa';
+	let mfaChallenge: MfaChallenge | null = null;
+	let pendingApproval = false;
 	import { marked } from 'marked';
 
 	import { toast } from 'svelte-sonner';
 
-	import { onMount, getContext, tick } from 'svelte';
+	import { onMount, getContext } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 
@@ -48,9 +54,30 @@
 
 	let ldapUsername = '';
 
+	let submitting = false;
+
 	const setSessionUser = async (sessionUser, redirectPath: string | null = null) => {
 		if (sessionUser) {
-			console.log(sessionUser);
+			if (sessionUser.next_step === 'pending') {
+				pendingApproval = true;
+				return;
+			}
+			if (sessionUser.challenge_token) {
+				mfaChallenge = sessionUser;
+				password = '';
+				confirmPassword = '';
+				return;
+			}
+			if (window.tether && sessionUser.token) {
+				try {
+					const access = await window.tether.signedIn(sessionUser.token);
+					sessionUser = { ...sessionUser, token: access.token, expires_at: access.expiresAt };
+					await applyTetherToken(access);
+				} catch (error) {
+					toast.error(String(error));
+					return;
+				}
+			}
 			toast.success($i18n.t(`You're now logged in.`));
 			if (sessionUser.token) {
 				localStorage.token = sessionUser.token;
@@ -66,10 +93,11 @@
 			}
 
 			if (!redirectPath) {
-				redirectPath = $page.url.searchParams.get('redirect') || '/';
+				redirectPath =
+					sessionStorage.getItem('auth:continue') || $page.url.searchParams.get('redirect') || '/';
 			}
 
-			goto(redirectPath);
+			await goto(redirectPath);
 			localStorage.removeItem('redirectPath');
 		}
 	};
@@ -110,12 +138,21 @@
 	};
 
 	const submitHandler = async () => {
-		if (mode === 'ldap') {
-			await ldapSignInHandler();
-		} else if (mode === 'signin') {
-			await signInHandler();
-		} else {
-			await signUpHandler();
+		if (submitting) {
+			return;
+		}
+
+		submitting = true;
+		try {
+			if (mode === 'ldap') {
+				await ldapSignInHandler();
+			} else if (mode === 'signin') {
+				await signInHandler();
+			} else {
+				await signUpHandler();
+			}
+		} finally {
+			submitting = false;
 		}
 	};
 
@@ -143,7 +180,10 @@
 		}
 
 		localStorage.token = token;
-		await setSessionUser(sessionUser, localStorage.getItem('redirectPath') || null);
+		await setSessionUser(
+			sessionUser,
+			sessionStorage.getItem('auth:continue') || localStorage.getItem('redirectPath') || null
+		);
 	};
 
 	let onboarding = false;
@@ -173,7 +213,9 @@
 
 	onMount(async () => {
 		const redirectPath = $page.url.searchParams.get('redirect');
-		if ($user !== undefined) {
+		const logout = $page.url.searchParams.get('state') === 'logout';
+
+		if ($user && !logout) {
 			goto(redirectPath || '/');
 		} else {
 			if (redirectPath) {
@@ -186,14 +228,29 @@
 			toast.error(error);
 		}
 
-		await oauthCallbackHandler();
+		if ($page.url.searchParams.has('mfa')) {
+			localStorage.removeItem('token');
+			try {
+				mfaChallenge = await mfaRequest('challenge');
+			} catch (error) {
+				toast.error(error instanceof Error ? error.message : String(error));
+			}
+			loaded = true;
+			return;
+		}
+		if ($page.url.searchParams.has('pending')) {
+			pendingApproval = true;
+			loaded = true;
+			return;
+		}
+		if (!logout) await oauthCallbackHandler();
 		form = $page.url.searchParams.get('form');
 
 		// Auto-redirect to SSO when OAUTH_AUTO_REDIRECT is enabled and the
 		// deployment is unambiguously SSO-only (single provider, no login form,
-		// no LDAP). Suppressed by ?form=, ?error=, onboarding, trusted-header
-		// auth, or an existing session/token.
-		if ($config?.oauth?.auto_redirect && !form && !error) {
+		// no LDAP). Suppressed after logout, by ?form=, ?error=, onboarding,
+		// trusted-header auth, or an existing session/token.
+		if ($config?.oauth?.auto_redirect && !logout && !form && !error) {
 			const providers = Object.keys($config?.oauth?.providers ?? {});
 			if (
 				providers.length === 1 &&
@@ -211,7 +268,6 @@
 		}
 
 		loaded = true;
-		setLogoImage();
 
 		if (($config?.features?.auth_trusted_header ?? false) || $config?.features?.auth === false) {
 			await signInHandler();
@@ -222,6 +278,9 @@
 </script>
 
 <svelte:head>
+	<!-- LICENSE covers this Open WebUI browser-title identifier.
+	Do not alter, remove, obscure, or replace it except as LICENSE permits:
+	https://docs.openwebui.com/license. -->
 	<title>
 		{`${$WEBUI_NAME}`}
 	</title>
@@ -235,27 +294,37 @@
 	}}
 />
 
-<div class="w-full h-screen max-h-[100dvh] text-white relative" id="auth-page">
-	<div
-		class="w-full h-full absolute top-0 left-0 bg-cover bg-center"
-		style="background-image: url('{authBgImage}')"
-	></div>
-	<div
-		class="w-full h-full absolute top-0 left-0 bg-white/70 dark:bg-black/60 backdrop-blur-sm"
-	></div>
+<div class="w-full h-dvh text-white relative" id="auth-page">
+	<div id="main-content" tabindex="-1" class="sr-only left-0 top-0"></div>
+	<div class="w-full h-full absolute top-0 left-0 bg-white dark:bg-black"></div>
 
 	<div class="w-full absolute top-0 left-0 right-0 h-8 drag-region" />
 
-	{#if loaded}
+	{#if loaded && !onboarding}
 		<div
-			class="fixed bg-transparent min-h-screen w-full flex justify-center font-primary z-50 text-black dark:text-white"
+			class="fixed inset-0 h-dvh overflow-y-auto bg-transparent w-full z-50 text-black dark:text-white"
 			id="auth-container"
 		>
-			<div class="w-full px-10 min-h-screen flex flex-col text-center">
-				{#if ($config?.features.auth_trusted_header ?? false) || $config?.features.auth === false}
+			<div class="w-full p-6 min-h-full flex flex-col text-center">
+				{#if mfaChallenge}
+					<div class="my-auto mx-auto w-full sm:max-w-md shrink-0">
+						<MfaChallengeForm
+							challenge={mfaChallenge}
+							onComplete={setSessionUser}
+							onCancel={() => {
+								mfaChallenge = null;
+								window.location.href = '/auth?state=logout&form=signin';
+							}}
+						/>
+					</div>
+				{:else if pendingApproval}
+					<p class="my-auto text-sm text-gray-500 dark:text-gray-400">
+						{$i18n.t('Your account is awaiting administrator approval.')}
+					</p>
+				{:else if ($config?.features.auth_trusted_header ?? false) || $config?.features.auth === false}
 					<div class=" my-auto pb-10 w-full sm:max-w-md">
 						<div
-							class="flex items-center justify-center gap-3 text-xl sm:text-2xl text-center font-medium dark:text-gray-200"
+							class="flex items-center justify-center gap-3 text-xl sm:text-2xl text-center font-normal dark:text-gray-200"
 						>
 							<div>
 								{$i18n.t('Signing in to {{WEBUI_NAME}}', { WEBUI_NAME: $WEBUI_NAME })}
@@ -269,17 +338,23 @@
 				{:else}
 					<div class="my-auto flex flex-col justify-center items-center">
 						<div
-							class="sm:max-w-md my-auto w-full dark:text-gray-100 bg-white/60 dark:bg-black/40 backdrop-blur-xl rounded-2xl shadow-xl border border-white/40 dark:border-white/10 p-8"
+							id="auth-login-card"
+							class=" sm:max-w-md my-auto sm:pb-10 w-full dark:text-gray-100"
 						>
-							<div class="flex justify-center mb-6">
-								<img
-									id="logo"
-									crossorigin="anonymous"
-									src="/static/favicon.png"
-									class="size-20 rounded-full"
-									alt="{$WEBUI_NAME} logo"
-								/>
-							</div>
+							{#if $config?.metadata?.auth_logo_position === 'center'}
+								<div class="flex justify-center mb-6">
+									<!-- LICENSE covers this ${$WEBUI_NAME} sign-in logo.
+									Do not alter, remove, obscure, or replace it except as LICENSE permits:
+									https://docs.openwebui.com/license. -->
+									<img
+										id="logo"
+										crossorigin="anonymous"
+										src="{WEBUI_BASE_URL}/static/favicon.png"
+										class="size-24 rounded-full"
+										alt="{$WEBUI_NAME} logo"
+									/>
+								</div>
+							{/if}
 							<form
 								class=" flex flex-col justify-center"
 								on:submit={(e) => {
@@ -288,7 +363,7 @@
 								}}
 							>
 								<div class="mb-1">
-									<div class=" text-2xl font-medium">
+									<div class=" text-2xl font-normal">
 										{#if $config?.onboarding ?? false}
 											{$i18n.t(`Get started with {{WEBUI_NAME}}`, { WEBUI_NAME: $WEBUI_NAME })}
 										{:else if mode === 'ldap'}
@@ -301,7 +376,7 @@
 									</div>
 
 									{#if $config?.onboarding ?? false}
-										<div class="mt-1 text-xs font-medium text-gray-600 dark:text-gray-500">
+										<div class="mt-1 text-xs font-normal text-gray-600 dark:text-gray-500">
 											ⓘ {$WEBUI_NAME}
 											{$i18n.t(
 												'does not make any external connections, and your data stays securely on your locally hosted server.'
@@ -314,7 +389,9 @@
 									<div class="flex flex-col mt-4">
 										{#if mode === 'signup'}
 											<div class="mb-2">
-												<label for="name" class="text-sm font-medium text-left mb-1 block"
+												<label
+													for="name"
+													class="text-[0.8125rem] leading-5 font-normal text-left mb-1 block"
 													>{$i18n.t('Name')}</label
 												>
 												<input
@@ -331,7 +408,9 @@
 
 										{#if mode === 'ldap'}
 											<div class="mb-2">
-												<label for="username" class="text-sm font-medium text-left mb-1 block"
+												<label
+													for="username"
+													class="text-[0.8125rem] leading-5 font-normal text-left mb-1 block"
 													>{$i18n.t('Username')}</label
 												>
 												<input
@@ -347,12 +426,15 @@
 											</div>
 										{:else}
 											<div class="mb-2">
-												<label for="email" class="text-sm font-medium text-left mb-1 block"
+												<label
+													for="email"
+													class="text-[0.8125rem] leading-5 font-normal text-left mb-1 block"
 													>{$i18n.t('Email')}</label
 												>
 												<input
 													bind:value={email}
-													type="email"
+													type="text"
+													inputmode="email"
 													id="email"
 													class="my-0.5 w-full text-sm rounded-lg px-3 py-2 outline-hidden border border-gray-200 dark:border-gray-700 bg-white/60 dark:bg-gray-900/40 transition focus:border-accent-400 placeholder:text-gray-400 dark:placeholder:text-gray-600"
 													autocomplete="email"
@@ -364,7 +446,9 @@
 										{/if}
 
 										<div>
-											<label for="password" class="text-sm font-medium text-left mb-1 block"
+											<label
+												for="password"
+												class="text-[0.8125rem] leading-5 font-normal text-left mb-1 block"
 												>{$i18n.t('Password')}</label
 											>
 											<SensitiveInput
@@ -386,7 +470,7 @@
 											<div class="mt-2">
 												<label
 													for="confirm-password"
-													class="text-sm font-medium text-left mb-1 block"
+													class="text-[0.8125rem] leading-5 font-normal text-left mb-1 block"
 													>{$i18n.t('Confirm Password')}</label
 												>
 												<SensitiveInput
@@ -410,29 +494,45 @@
 											<button
 												class="bg-accent-500 hover:bg-accent-400 text-accent-950 transition w-full rounded-full font-medium text-sm py-2.5"
 												type="submit"
+												aria-disabled={submitting}
 											>
-												{$i18n.t('Authenticate')}
+												<div class="self-center">{$i18n.t('Authenticate')}</div>
+
+												{#if submitting}
+													<div class="ml-1.5 self-center">
+														<Spinner />
+													</div>
+												{/if}
 											</button>
 										{:else}
 											<button
 												class="bg-accent-500 hover:bg-accent-400 text-accent-950 transition w-full rounded-full font-medium text-sm py-2.5"
 												type="submit"
+												aria-disabled={submitting}
 											>
-												{mode === 'signin'
-													? $i18n.t('Sign in')
-													: ($config?.onboarding ?? false)
-														? $i18n.t('Create Admin Account')
-														: $i18n.t('Create Account')}
+												<div class="self-center">
+													{mode === 'signin'
+														? $i18n.t('Sign in')
+														: ($config?.onboarding ?? false)
+															? $i18n.t('Create Admin Account')
+															: $i18n.t('Create Account')}
+												</div>
+
+												{#if submitting}
+													<div class="ml-1.5 self-center">
+														<Spinner />
+													</div>
+												{/if}
 											</button>
 
 											{#if $config?.features.enable_signup && !($config?.onboarding ?? false)}
-												<div class=" mt-4 text-sm text-center">
+												<div class=" mt-4 text-[0.8125rem] leading-5 text-center">
 													{mode === 'signin'
 														? $i18n.t("Don't have an account?")
 														: $i18n.t('Already have an account?')}
 
 													<button
-														class=" font-medium underline"
+														class=" font-normal underline"
 														type="button"
 														on:click={() => {
 															if (mode === 'signin') {
@@ -456,7 +556,7 @@
 									<hr class="w-32 h-px my-4 border-0 dark:bg-gray-100/10 bg-gray-700/10" />
 									{#if $config?.features.enable_login_form || $config?.features.enable_ldap || form}
 										<span
-											class="px-3 text-sm font-medium text-gray-900 dark:text-white bg-transparent"
+											class="px-3 text-sm font-normal text-gray-900 dark:text-white bg-transparent"
 											>{$i18n.t('or')}</span
 										>
 									{/if}
@@ -466,7 +566,7 @@
 								<div class="flex flex-col space-y-2">
 									{#if $config?.oauth?.providers?.google}
 										<button
-											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
+											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-normal text-[0.8125rem] leading-5 py-2.5"
 											on:click={() => {
 												window.location.href = `${WEBUI_BASE_URL}/oauth/google/login`;
 											}}
@@ -496,7 +596,7 @@
 									{/if}
 									{#if $config?.oauth?.providers?.microsoft}
 										<button
-											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
+											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-normal text-[0.8125rem] leading-5 py-2.5"
 											on:click={() => {
 												window.location.href = `${WEBUI_BASE_URL}/oauth/microsoft/login`;
 											}}
@@ -527,7 +627,7 @@
 									{/if}
 									{#if $config?.oauth?.providers?.github}
 										<button
-											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
+											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-normal text-[0.8125rem] leading-5 py-2.5"
 											on:click={() => {
 												window.location.href = `${WEBUI_BASE_URL}/oauth/github/login`;
 											}}
@@ -578,7 +678,7 @@
 									{/if}
 									{#if $config?.oauth?.providers?.feishu}
 										<button
-											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
+											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-normal text-[0.8125rem] leading-5 py-2.5"
 											on:click={() => {
 												window.location.href = `${WEBUI_BASE_URL}/oauth/feishu/login`;
 											}}
@@ -621,10 +721,17 @@
 			</div>
 		</div>
 
-		{#if ($config?.features.auth_trusted_header ?? false) || $config?.features.auth === false}
-			<div class="fixed m-10 z-50">
+		{#if !$config?.metadata?.auth_logo_position || $config?.metadata?.auth_logo_position === 'top-right'}
+			<div
+				class="fixed top-0 m-10 z-50"
+				class:left-0={!$config?.metadata?.auth_logo_position}
+				class:right-0={$config?.metadata?.auth_logo_position === 'top-right'}
+			>
 				<div class="flex space-x-2">
 					<div class=" self-center">
+						<!-- LICENSE covers this Open WebUI sign-in logo.
+						Do not alter, remove, obscure, or replace it except as LICENSE permits:
+						https://docs.openwebui.com/license. -->
 						<img
 							id="logo"
 							crossorigin="anonymous"

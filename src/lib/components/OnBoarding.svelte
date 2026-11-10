@@ -1,5 +1,6 @@
 <script>
-	import { getContext, onMount } from 'svelte';
+	import { getContext } from 'svelte';
+	import { WEBUI_NAME } from '$lib/stores';
 	const i18n = getContext('i18n');
 
 	import { WEBUI_BASE_URL } from '$lib/config/app';
@@ -19,30 +20,35 @@
 	// prominent=true: 渲染醒目登录大按钮(展示页);false: 现有小箭头(首次安装引导)
 	export let prominent = false;
 
-	function setLogoImage() {
-		const logo = document.getElementById('logo');
+	let videoElement;
+	let playOnInteractionRegistered = false;
 
-		if (logo) {
-			const isDarkMode = document.documentElement.classList.contains('dark');
-
-			if (isDarkMode) {
-				const darkImage = new Image();
-				darkImage.src = `${WEBUI_BASE_URL}/static/favicon-dark.png`;
-
-				darkImage.onload = () => {
-					logo.src = `${WEBUI_BASE_URL}/static/favicon-dark.png`;
-					logo.style.filter = ''; // Ensure no inversion is applied if splash-dark.png exists
-				};
-
-				darkImage.onerror = () => {
-					logo.style.filter = 'invert(1)'; // Invert image if splash-dark.png is missing
-				};
-			}
+	function playBackgroundVideo() {
+		if (!videoElement) {
+			return;
 		}
+
+		videoElement.play().catch(() => {
+			if (playOnInteractionRegistered) {
+				return;
+			}
+
+			playOnInteractionRegistered = true;
+
+			const playOnInteraction = () => {
+				videoElement.play().catch(() => {});
+				document.removeEventListener('click', playOnInteraction);
+				document.removeEventListener('touchstart', playOnInteraction);
+				playOnInteractionRegistered = false;
+			};
+
+			document.addEventListener('click', playOnInteraction);
+			document.addEventListener('touchstart', playOnInteraction);
+		});
 	}
 
-	$: if (show) {
-		setLogoImage();
+	$: if (show && videoElement) {
+		playBackgroundVideo();
 	}
 </script>
 
@@ -90,7 +96,7 @@
 								getStartedHandler();
 							}}
 						>
-							<span class="font-primary">{$i18n.t(`Get started`)}</span>
+							<span class="font-primary">{$i18n.t('Get started')}</span>
 							<ArrowRightCircle className="size-5" aria-hidden="true" />
 						</button>
 					{:else}
@@ -105,7 +111,7 @@
 								<ArrowRightCircle className="size-6" aria-hidden="true" />
 							</button>
 							<div class="mt-1.5 font-primary text-base font-medium" aria-hidden="true">
-								{$i18n.t(`Get started`)}
+								{$i18n.t('Get started')}
 							</div>
 						</div>
 					{/if}

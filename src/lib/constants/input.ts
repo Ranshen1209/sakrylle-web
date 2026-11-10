@@ -1,1 +1,1 @@
-export const PASTED_TEXT_CHARACTER_LIMIT = 1000;
+export { PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
