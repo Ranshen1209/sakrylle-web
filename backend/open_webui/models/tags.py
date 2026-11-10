@@ -39,9 +39,8 @@ class TagModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)  # allows ORM model binding
 
 
-# --- tag schema forms ---
+# Tag schema forms
 # Forms
-####################
 
 
 class TagChatIdForm(BaseModel):
@@ -63,7 +62,6 @@ class TagTable:
                 record = Tag(id=tag_id, user_id=user_id, name=name)
                 db.add(record)
                 await db.commit()
-                await db.refresh(record)
                 return TagModel.model_validate(record) if record else None
             except Exception as e:
                 log.exception('Error inserting tag %r: %s', name, e)
@@ -98,7 +96,7 @@ class TagTable:
             async with get_async_db_context(db) as db:
                 id = name.replace(' ', '_').lower()
                 result = await db.execute(delete(Tag).filter_by(id=id, user_id=user_id))
-                log.debug(f'res: {result.rowcount}')
+                log.debug('res: %s', result.rowcount)
                 await db.commit()
                 return True
         except Exception as e:
